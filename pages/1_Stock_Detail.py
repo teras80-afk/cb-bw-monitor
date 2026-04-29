@@ -19,7 +19,7 @@ st.caption("발행 이력, 미상환 잔액, 잠재 희석률, 전환청구 D-Da
 require_dart_or_stop()
 name_map = get_ticker_name_map()
 if not name_map:
-    st.warning("⚠️ KRX 종목 리스트 로딩 실패 — 6자리 종목코드 직접 입력하세요")
+    st.info("ℹ️ 종목명 자동 변환 기능은 비활성 상태입니다. **6자리 종목코드를 직접 입력**하세요. (예: 005930)")
 
 st.markdown("---")
 
@@ -168,3 +168,4 @@ with st.expander("ℹ️ 데이터 정확성 주의"):
         "이후 리픽싱은 미반영\n"
         "- **희석률**: 분모는 현재 상장주식수. 우선주·자사주 미차감"
     )
+
