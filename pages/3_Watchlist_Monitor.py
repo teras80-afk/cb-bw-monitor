@@ -11,7 +11,7 @@ from lib import (
     _github_config,
     fetch_debt_securities_latest, filter_cb_bw_outstanding,
     extract_balance_and_price, find_imminent_conversions,
-    get_listed_shares,
+    get_listed_shares, get_company_name,
 )
 
 st.set_page_config(page_title="관심종목 모니터", page_icon="📋", layout="wide")
@@ -98,7 +98,7 @@ for i, line in enumerate(lines):
         })
         continue
 
-    nm = name_map.get(ticker, ticker)
+    nm = get_company_name(ticker, name_map)
 
     # 미상환 잔액 / 희석률
     try:
