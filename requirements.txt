@@ -1,0 +1,7 @@
+streamlit>=1.30
+pandas
+requests
+altair
+FinanceDataReader
+lxml
+OpenDartReader>=0.2.1
