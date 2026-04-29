@@ -88,6 +88,41 @@ def resolve_ticker(user_input: str, name_map: dict) -> str | None:
     return hits[0] if len(hits) == 1 else None
 
 
+@st.cache_data(ttl=86400)
+def get_company_name_from_dart(ticker: str) -> str:
+    """
+    DART API로 종목코드 → 회사명 조회. 24시간 캐시.
+    실패 시 빈 문자열 반환.
+    """
+    dart, _ = get_dart_client()
+    if dart is None:
+        return ""
+    try:
+        info = dart.company(ticker)
+        if info is None:
+            return ""
+        # OpenDartReader.company()는 dict 또는 Series 반환
+        if hasattr(info, "get"):
+            name = info.get("corp_name", "") or info.get("stock_name", "")
+        else:
+            name = ""
+        return str(name).strip() if name else ""
+    except Exception:
+        return ""
+
+
+def get_company_name(ticker: str, name_map: dict = None) -> str:
+    """
+    종목명 조회 (우선순위: name_map → DART API → 종목코드 그대로).
+    """
+    if name_map and ticker in name_map:
+        return name_map[ticker]
+    name = get_company_name_from_dart(ticker)
+    if name:
+        return name
+    return ticker
+
+
 # ─────────────────────────────────────────────────────────────
 # CB/BW 발행 공시 조회
 # ─────────────────────────────────────────────────────────────
