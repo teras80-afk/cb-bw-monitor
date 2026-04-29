@@ -9,7 +9,7 @@ from lib import (
     fetch_cb_bw_disclosures, fetch_debt_securities_latest,
     filter_cb_bw_outstanding, extract_balance_and_price,
     fetch_cb_conversion_periods, find_imminent_conversions,
-    get_listed_shares,
+    get_listed_shares, get_company_name,
 )
 
 st.set_page_config(page_title="종목별 조회", page_icon="🎯", layout="wide")
@@ -39,7 +39,7 @@ if not ticker:
     st.error("종목을 찾지 못했습니다.")
     st.stop()
 
-name = name_map.get(ticker, ticker)
+name = get_company_name(ticker, name_map)
 st.markdown(f"### 📍 {name} ({ticker})")
 
 # ─── 섹션 1: 핵심 지표 (잠재주식수 / 희석률) ───
@@ -168,4 +168,3 @@ with st.expander("ℹ️ 데이터 정확성 주의"):
         "이후 리픽싱은 미반영\n"
         "- **희석률**: 분모는 현재 상장주식수. 우선주·자사주 미차감"
     )
-
