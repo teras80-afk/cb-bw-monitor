@@ -32,9 +32,9 @@ with col1:
         st.error("❌ OpenDartReader 라이브러리 없음")
 
     if _HAS_FDR:
-        st.success("✅ FinanceDataReader 로딩됨")
+        st.success("✅ FinanceDataReader 로딩됨 (종목명 자동 변환 가능)")
     else:
-        st.warning("⚠️ FinanceDataReader 없음 (종목명 검색 제한)")
+        st.info("ℹ️ FinanceDataReader 미사용 (Python 3.14 호환 이슈로 제외) — **6자리 종목코드 직접 입력** 방식")
 
 with col2:
     st.markdown("#### 📚 사용 메뉴")
