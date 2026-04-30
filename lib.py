@@ -283,11 +283,11 @@ def fetch_cb_conversion_periods(ticker: str) -> pd.DataFrame:
         return None
 
     bgd_col = _find_col(
-        ["cv_prd_bgd", "ex_prd_bgd", "cvRgBgd", "exRgBgd"],
+        ["cvrqpd_bgd", "cv_prd_bgd", "ex_prd_bgd", "cvRgBgd", "exRgBgd"],
         keywords_kr=["전환", "시작"]
     )
     edd_col = _find_col(
-        ["cv_prd_edd", "ex_prd_edd", "cvRgEdd", "exRgEdd"],
+        ["cvrqpd_edd", "cv_prd_edd", "ex_prd_edd", "cvRgEdd", "exRgEdd"],
         keywords_kr=["전환", "종료"]
     )
     prc_col = _find_col(["cv_prc", "ex_prc", "cvPrc", "exPrc"])
