@@ -9,6 +9,7 @@ from lib import (
     fetch_cb_bw_disclosures, fetch_debt_securities_latest,
     filter_cb_bw_outstanding, extract_balance_and_price,
     fetch_cb_conversion_periods, find_imminent_conversions,
+    get_full_conversion_schedule,
     get_listed_shares, get_company_name,
 )
 
@@ -115,23 +116,43 @@ else:
 
 st.markdown("---")
 
-# ─── 섹션 3: 전환청구 D-Day ───
-st.markdown("#### ⏰ 전환청구 D-Day 체크 (D-30 이내)")
-with st.spinner("전환청구기간 조회 중..."):
-    imminent = find_imminent_conversions(ticker, days_threshold=30)
+# ─── 섹션 3: 전환청구 일정표 ───
+st.markdown("#### 🗓️ 전환청구 가능 일정")
+st.caption("발행된 모든 CB/BW의 전환청구 시작일과 D-Day를 한눈에. "
+           "🔴 행사중 / 🟡 D-180 임박 / 🟢 대기 / ⚪ 종료")
 
-if not imminent:
-    st.success("✅ D-30 이내 전환청구 개시 예정 CB/BW 없음")
+with st.spinner("전환청구기간 조회 중..."):
+    schedule = get_full_conversion_schedule(ticker)
+
+if schedule.empty:
+    st.info("ℹ️ 전환청구기간 정보 없음 (발행 공시가 없거나 데이터 누락)")
 else:
-    st.warning(f"⚠️ {len(imminent)}건 임박")
-    df_imm = pd.DataFrame(imminent)
-    df_imm["D-Day"] = df_imm["D_days"].apply(
-        lambda d: f"D-{d}" if d > 0 else "D-Day"
-    )
-    df_imm = df_imm.drop(columns=["D_days"])
-    df_imm = df_imm[["사채종류", "회차", "권면총액",
-                     "전환청구개시일", "D-Day", "전환가액"]]
-    st.dataframe(df_imm, use_container_width=True, hide_index=True)
+    # 임박/행사중만 카운트
+    n_active = (schedule["상태"] == "🔴 행사중").sum()
+    n_imminent = (schedule["상태"] == "🟡 임박").sum()
+    n_waiting = (schedule["상태"] == "🟢 대기").sum()
+    n_ended = (schedule["상태"] == "⚪ 종료").sum()
+
+    msgs = []
+    if n_active > 0:
+        msgs.append(f"🔴 행사중 **{n_active}건**")
+    if n_imminent > 0:
+        msgs.append(f"🟡 D-180 임박 **{n_imminent}건**")
+    if n_waiting > 0:
+        msgs.append(f"🟢 대기 {n_waiting}건")
+    if n_ended > 0:
+        msgs.append(f"⚪ 종료 {n_ended}건")
+
+    if n_active > 0:
+        st.error(" / ".join(msgs))
+    elif n_imminent > 0:
+        st.warning(" / ".join(msgs))
+    else:
+        st.success(" / ".join(msgs) if msgs else "현재 활성 CB/BW 없음")
+
+    st.dataframe(schedule, use_container_width=True, hide_index=True)
+    st.caption("💡 D-Day가 음수(=시작일 지남)인 건은 '행사중'으로 표시됩니다. "
+               "행사중·임박 건은 단기 매물 출회 가능성이 높으니 주의.")
 
 st.markdown("---")
 
