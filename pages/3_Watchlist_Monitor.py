@@ -11,6 +11,7 @@ from lib import (
     _github_config,
     fetch_debt_securities_latest, filter_cb_bw_outstanding,
     extract_balance_and_price, find_imminent_conversions,
+    get_next_conversion_date,
     get_listed_shares, get_company_name,
 )
 
@@ -94,7 +95,9 @@ for i, line in enumerate(lines):
         rows.append({
             "종목명": line, "코드": "—",
             "미상환잔액(억원)": "—", "잠재주식수": "—",
-            "희석률": "—", "D-30 임박": "❓ 매핑실패",
+            "희석률": "—",
+            "다음 행사일": "—",
+            "D-180 임박": "❓ 매핑실패",
         })
         continue
 
@@ -123,19 +126,31 @@ for i, line in enumerate(lines):
         potential = 0
         dilution = 0.0
 
-    # D-30 임박
+    # D-180 임박 + 다음 행사일
     try:
-        imminent = find_imminent_conversions(ticker, days_threshold=30)
+        imminent = find_imminent_conversions(ticker, days_threshold=180)
     except Exception:
         imminent = []
 
     if imminent:
-        # 가장 가까운 D-Day
         nearest = min(h["D_days"] for h in imminent)
-        d30_label = (f"⚠️ {len(imminent)}건 (최근 D-{nearest})"
-                     if nearest > 0 else f"🚨 {len(imminent)}건 (D-Day)")
+        d_label = (f"⚠️ {len(imminent)}건 (최근 D-{nearest})"
+                   if nearest > 0 else f"🚨 {len(imminent)}건 (D-Day)")
     else:
-        d30_label = "✅ 없음"
+        d_label = "✅ 없음"
+
+    # 다음 행사일 (가장 가까운 미래 1건)
+    try:
+        next_date, next_days, next_emoji = get_next_conversion_date(ticker)
+    except Exception:
+        next_date, next_days, next_emoji = "—", 99999, ""
+
+    if next_date == "—":
+        next_label = "—"
+    elif next_date == "행사중":
+        next_label = "🔴 행사중"
+    else:
+        next_label = f"{next_emoji} {next_date} (D-{next_days})"
 
     rows.append({
         "종목명": nm,
@@ -144,7 +159,8 @@ for i, line in enumerate(lines):
                             if balance_eok > 0 else "—"),
         "잠재주식수": (f"{potential:,.0f}주" if potential > 0 else "—"),
         "희석률": f"{dilution:.2f}%" if dilution > 0 else "—",
-        "D-30 임박": d30_label,
+        "다음 행사일": next_label,
+        "D-180 임박": d_label,
     })
 prog.empty()
 
@@ -153,16 +169,19 @@ df_summary = pd.DataFrame(rows)
 # 요약 메시지
 n_outstanding = sum(1 for r in rows
                     if r["미상환잔액(억원)"] != "—")
-n_imminent = sum(1 for r in rows if "건" in r["D-30 임박"])
+n_imminent = sum(1 for r in rows if "건" in r["D-180 임박"])
+n_active = sum(1 for r in rows if "행사중" in r["다음 행사일"])
 
 msg_parts = []
+if n_active > 0:
+    msg_parts.append(f"🔴 행사중 **{n_active}건**")
 if n_imminent > 0:
-    msg_parts.append(f"🚨 D-30 임박 **{n_imminent}건**")
+    msg_parts.append(f"⚠️ D-180 임박 **{n_imminent}건**")
 if n_outstanding > 0:
     msg_parts.append(f"💰 미상환 보유 **{n_outstanding}건**")
 
 if msg_parts:
-    if n_imminent > 0:
+    if n_active > 0 or n_imminent > 0:
         st.warning(" / ".join(msg_parts))
     else:
         st.info(" / ".join(msg_parts))
