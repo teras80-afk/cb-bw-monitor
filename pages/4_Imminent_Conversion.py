@@ -1,24 +1,21 @@
 """
-페이지 4 — 전환청구 D-30 임박 종목 (시장 전체)
+페이지 4 — 전환청구 D-N 임박 종목 (시장 전체)
 
-설계상 주의:
-- DART API에는 "특정 날짜에 전환청구개시일이 도래하는 종목"을 직접 검색하는
-  엔드포인트가 없음.
-- 대안: 최근 N년간 발행된 CB/BW 공시를 가져온 뒤, 각 공시의 전환청구개시일을
-  계산해서 D-30 이내 도래 건을 추림.
-- 시간이 꽤 걸릴 수 있으니 캐시(30분)와 진행 표시를 충분히.
+설계 변경:
+- DART API의 list 호출은 한 번에 긴 기간 요청 시 빈 결과 반환 가능성 있음
+- 3개월씩 분할 조회 → 합치기 방식으로 안정성 확보
+- 기본 임박 기준 D-180으로 변경 (사용자 요청)
 """
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
 from lib import (
     require_dart_or_stop, get_dart_client, parse_date_flex,
-    fetch_market_cb_bw_recent,
 )
 
 st.set_page_config(page_title="전환청구 임박", page_icon="⏰", layout="wide")
-st.title("⏰ 전환청구 D-30 임박 종목 (시장 전체)")
-st.caption("앞으로 D-30 이내 전환청구가 가능해지는 CB/BW를 시장 전체에서 검색")
+st.title("⏰ 전환청구 임박 종목 (시장 전체)")
+st.caption("앞으로 D-N 이내 전환청구가 가능해지는 CB/BW를 시장 전체에서 검색")
 
 require_dart_or_stop()
 
@@ -27,8 +24,8 @@ st.markdown("---")
 st.info(
     "💡 **작동 원리**: "
     "최근 N년 발행된 CB/BW 공시 → 각 공시의 전환청구개시일 추출 → "
-    "오늘 기준 D-30 이내 도래 건만 표시. "
-    "스캔 범위가 넓을수록 시간이 오래 걸립니다(수십 초~몇 분)."
+    "오늘 기준 D-N 이내 도래 건만 표시. "
+    "DART API 안정성을 위해 3개월씩 분할 조회하므로 시간이 좀 걸립니다 (1~3분)."
 )
 
 col_y, col_d = st.columns(2)
@@ -39,7 +36,7 @@ with col_y:
                                     "2년이 가장 적절합니다.")
 with col_d:
     days_threshold = st.selectbox("임박 기준",
-                                   [7, 14, 30, 60, 90], index=2,
+                                   [30, 60, 90, 180, 365], index=3,
                                    format_func=lambda d: f"D-{d} 이내")
 
 if not st.button("🔍 시장 전체 스캔 시작", type="primary"):
@@ -47,73 +44,104 @@ if not st.button("🔍 시장 전체 스캔 시작", type="primary"):
 
 
 @st.cache_data(ttl=1800)
-def scan_market_imminent(years_back: int, days_threshold: int):
+def fetch_market_disclosures_chunked(years_back: int) -> pd.DataFrame:
     """
-    최근 N년 시장 전체 CB/BW 공시 → 각 공시의 event() 상세 조회 →
-    전환청구개시일 D-N 이내 건 반환.
+    시장 전체 CB/BW 발행 공시를 3개월씩 분할 조회해서 합침.
     """
+    dart, _ = get_dart_client()
+    if dart is None:
+        return pd.DataFrame()
+
+    today = datetime.now().date()
+    start_total = today - timedelta(days=years_back * 365)
+
+    # 3개월(약 90일) 단위 청크 생성
+    chunks = []
+    cur = start_total
+    while cur < today:
+        chunk_end = min(cur + timedelta(days=90), today)
+        chunks.append((cur, chunk_end))
+        cur = chunk_end + timedelta(days=1)
+
+    all_frames = []
+    progress = st.progress(0, text=f"공시 리스트 조회 중... (총 {len(chunks)}개 청크)")
+    for i, (s, e) in enumerate(chunks):
+        progress.progress((i + 1) / len(chunks),
+                          text=f"공시 조회 {i+1}/{len(chunks)} ({s} ~ {e})")
+        try:
+            df = dart.list(start=s.strftime("%Y-%m-%d"),
+                           end=e.strftime("%Y-%m-%d"),
+                           kind="B", final=True)
+            if df is not None and len(df) > 0:
+                all_frames.append(df)
+        except Exception:
+            continue
+    progress.empty()
+
+    if not all_frames:
+        return pd.DataFrame()
+
+    merged = pd.concat(all_frames, ignore_index=True)
+    if "report_nm" not in merged.columns:
+        return pd.DataFrame()
+
+    mask = merged["report_nm"].str.contains(
+        "전환사채권\\s*발행결정|신주인수권부사채권\\s*발행결정",
+        na=False, regex=True
+    )
+    return merged[mask].drop_duplicates(subset=["rcept_no"]).reset_index(drop=True)
+
+
+@st.cache_data(ttl=1800)
+def scan_imminent(years_back: int, days_threshold: int):
+    """발행 공시 → 종목별 event() → 임박 건 추출"""
     dart, _ = get_dart_client()
     if dart is None:
         return [], "DART 미설정"
 
-    # 1. 최근 N년 발행 공시 모두 가져오기 (pages별로 캐시)
-    days = years_back * 365
-    end = datetime.now().strftime("%Y-%m-%d")
-    start = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    df_target = fetch_market_disclosures_chunked(years_back)
+    if df_target.empty:
+        return [], "발행 공시를 찾지 못했습니다 (DART API 응답 빈값)"
 
-    try:
-        df_market = dart.list(start=start, end=end, kind="B", final=True)
-    except Exception as e:
-        return [], f"공시 리스트 조회 실패: {e}"
+    if "stock_code" not in df_target.columns:
+        return [], "응답에 stock_code 컬럼 없음"
 
-    if df_market is None or len(df_market) == 0:
-        return [], "공시 없음"
-
-    if "report_nm" not in df_market.columns:
-        return [], "공시 응답 형식 오류"
-
-    mask = df_market["report_nm"].str.contains(
-        "전환사채권\\s*발행결정|신주인수권부사채권\\s*발행결정",
-        na=False, regex=True
-    )
-    df_target = df_market[mask].copy().reset_index(drop=True)
-    if len(df_target) == 0:
-        return [], "조건 매칭 공시 없음"
-
-    # 2. 종목별로 그룹화 후 event() 한 번씩만 호출 (DART 호출 절약)
     today = pd.Timestamp.now().normalize()
     results = []
-    seen_tickers = set()
+    seen = set()
 
-    total = df_target["stock_code"].nunique() if "stock_code" in df_target.columns else len(df_target)
-    progress = st.progress(0, text=f"종목별 상세 조회 시작... (총 {total}개사)")
-    processed = 0
+    # 종목별로 한 번씩만 event 호출
+    unique_tickers = df_target.groupby("stock_code").first().reset_index()
+    total = len(unique_tickers)
+    progress = st.progress(0, text=f"종목별 상세 조회 시작... ({total}개사)")
 
-    for stock_code, group in df_target.groupby("stock_code"):
-        processed += 1
-        progress.progress(min(processed / max(total, 1), 1.0),
-                          text=f"조회 중... {processed}/{total}")
+    end_date = datetime.now().strftime("%Y-%m-%d")
+    start_date = (datetime.now() - timedelta(days=years_back * 365)).strftime("%Y-%m-%d")
+
+    for idx, row_meta in unique_tickers.iterrows():
+        progress.progress((idx + 1) / max(total, 1),
+                          text=f"조회 중... {idx+1}/{total} ({row_meta.get('corp_name', '')})")
+        stock_code = row_meta.get("stock_code")
         if not stock_code or pd.isna(stock_code):
             continue
         ticker = str(stock_code).zfill(6)
-        if ticker in seen_tickers:
+        if ticker in seen:
             continue
-        seen_tickers.add(ticker)
-        corp_name = group.iloc[0].get("corp_name", "—")
+        seen.add(ticker)
+        corp_name = row_meta.get("corp_name", "—")
 
-        # event 조회 (CB + BW 둘 다)
         for event_kind, type_label in [
             ("전환사채권 발행결정", "CB"),
             ("신주인수권부사채권 발행결정", "BW"),
         ]:
             try:
-                ev_df = dart.event(ticker, event_kind, start=start, end=end)
+                ev_df = dart.event(ticker, event_kind, start=start_date, end=end_date)
             except Exception:
                 continue
             if ev_df is None or len(ev_df) == 0:
                 continue
 
-            # 전환청구개시일 컬럼 찾기
+            # 전환청구개시일 컬럼 탐색
             bgd_col = None
             for cand in ["cv_prd_bgd", "ex_prd_bgd", "cvRgBgd", "exRgBgd"]:
                 if cand in ev_df.columns:
@@ -127,7 +155,6 @@ def scan_market_imminent(years_back: int, days_threshold: int):
             if bgd_col is None:
                 continue
 
-            # 권면총액 컬럼
             fta_col = None
             for cand in ["bd_fta", "bdFta"]:
                 if cand in ev_df.columns:
@@ -140,31 +167,38 @@ def scan_market_imminent(years_back: int, days_threshold: int):
                     continue
                 days_to = (bgd_dt.normalize() - today).days
                 if 0 <= days_to <= days_threshold:
+                    fta_val = row.get(fta_col, "—") if fta_col else "—"
+                    try:
+                        fta_won = float(str(fta_val).replace(",", "").strip())
+                        fta_eok = f"{fta_won/1e8:,.1f}억"
+                    except Exception:
+                        fta_eok = str(fta_val)
+
                     results.append({
                         "종목명": corp_name,
                         "코드": ticker,
                         "사채종류": type_label,
                         "전환청구개시일": bgd_dt.strftime("%Y-%m-%d"),
                         "D_days": days_to,
-                        "권면총액": row.get(fta_col, "—") if fta_col else "—",
+                        "권면총액": fta_eok,
                     })
-
     progress.empty()
     return results, "ok"
 
 
-with st.spinner("스캔 중... (시간이 좀 걸립니다)"):
-    results, status = scan_market_imminent(years_back, days_threshold)
+with st.spinner("스캔 중... 1~3분 소요"):
+    results, status = scan_imminent(years_back, days_threshold)
 
 if status != "ok":
     st.error(f"스캔 실패: {status}")
+    st.caption("Streamlit 우측 하단 'Manage app' → 로그에서 상세 원인 확인 가능")
     st.stop()
 
 if not results:
     st.success(f"✅ 향후 D-{days_threshold} 이내 전환청구 개시 예정 종목 없음")
     st.stop()
 
-# D-Day 오름차순 정렬
+# 결과 정렬 + 표시
 df_result = pd.DataFrame(results).sort_values("D_days").reset_index(drop=True)
 df_result["D-Day"] = df_result["D_days"].apply(
     lambda d: f"D-{d}" if d > 0 else "D-Day"
@@ -180,7 +214,7 @@ st.dataframe(df_result_show, use_container_width=True, hide_index=True)
 csv = df_result_show.to_csv(index=False).encode("utf-8-sig")
 st.download_button(
     "📥 CSV 다운로드", data=csv,
-    file_name=f"cb_bw_imminent_{datetime.now():%Y%m%d}.csv",
+    file_name=f"cb_bw_imminent_D{days_threshold}_{datetime.now():%Y%m%d}.csv",
     mime="text/csv",
 )
 
@@ -188,6 +222,6 @@ st.markdown("---")
 st.caption(
     "📌 발행공시상 명시된 전환청구개시일 기준입니다. "
     "이미 조기상환·전액 전환된 CB/BW도 포함될 수 있어, "
-    "실제 오버행 여부는 DART 정기보고서의 미상환 잔액으로 교차 확인 필요. "
+    "실제 오버행 여부는 화면 1(종목별 조회)에서 미상환 잔액 교차 확인 필요. "
     "캐시는 30분이며, 새로고침이 필요하면 페이지를 다시 로드하세요."
 )
