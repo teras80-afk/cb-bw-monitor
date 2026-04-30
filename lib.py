@@ -326,8 +326,11 @@ def parse_date_flex(s):
         return None
 
 
-def find_imminent_conversions(ticker: str, days_threshold: int = 30) -> list:
-    """D-N일 이내 전환청구개시일 도래 건"""
+def find_imminent_conversions(ticker: str, days_threshold: int = 180) -> list:
+    """
+    D-N일 이내 전환청구개시일 도래 건 반환.
+    기본 D-180일(6개월 전 알림).
+    """
     df = fetch_cb_conversion_periods(ticker)
     if df.empty:
         return []
@@ -349,6 +352,102 @@ def find_imminent_conversions(ticker: str, days_threshold: int = 30) -> list:
                 "D_days": days_to,
             })
     return results
+
+
+def get_full_conversion_schedule(ticker: str) -> pd.DataFrame:
+    """
+    전체 전환청구 일정표 (과거·현재·미래 모두 포함).
+    화면에 시간순으로 정렬해서 표시할 용도.
+    상태 컬럼 추가: '🔴 행사중' / '🟡 임박' / '🟢 대기'
+    """
+    df = fetch_cb_conversion_periods(ticker)
+    if df.empty:
+        return pd.DataFrame()
+
+    today = pd.Timestamp.now().normalize()
+    rows = []
+    for _, row in df.iterrows():
+        bgd_dt = parse_date_flex(row.get("전환청구개시일"))
+        edd_dt = parse_date_flex(row.get("전환청구종료일"))
+        if bgd_dt is None:
+            continue
+
+        days_to = (bgd_dt.normalize() - today).days
+        # 상태 판정
+        if days_to <= 0:
+            # 시작일 지남
+            if edd_dt is not None and today > edd_dt.normalize():
+                status = "⚪ 종료"
+                d_label = "종료"
+            else:
+                status = "🔴 행사중"
+                d_label = "행사중"
+        elif days_to <= 180:
+            status = "🟡 임박"
+            d_label = f"D-{days_to}"
+        else:
+            status = "🟢 대기"
+            d_label = f"D-{days_to}"
+
+        rows.append({
+            "상태": status,
+            "사채종류": row.get("사채종류", "-"),
+            "회차": str(row.get("회차", "-")),
+            "권면총액": row.get("권면총액", "-"),
+            "전환청구개시일": bgd_dt.strftime("%Y-%m-%d"),
+            "D-Day": d_label,
+            "전환청구종료일": edd_dt.strftime("%Y-%m-%d") if edd_dt is not None else "-",
+            "전환가액": row.get("전환가액", "-"),
+            "_sort": days_to,
+        })
+
+    if not rows:
+        return pd.DataFrame()
+
+    out = pd.DataFrame(rows).sort_values("_sort").drop(columns=["_sort"]).reset_index(drop=True)
+    return out
+
+
+def get_next_conversion_date(ticker: str) -> tuple[str, int, str]:
+    """
+    가장 가까운 미래의 전환청구개시일 1건만 반환.
+    반환: (날짜문자열, D-Day일수, 상태이모지)
+    이미 지난 건은 (지난것_중_가장_가까운_종료일, ...) 또는 ("—", 99999, "")
+    """
+    df = fetch_cb_conversion_periods(ticker)
+    if df.empty:
+        return "—", 99999, ""
+
+    today = pd.Timestamp.now().normalize()
+    future_dates = []
+    active_now = False
+
+    for _, row in df.iterrows():
+        bgd_dt = parse_date_flex(row.get("전환청구개시일"))
+        edd_dt = parse_date_flex(row.get("전환청구종료일"))
+        if bgd_dt is None:
+            continue
+
+        days_to = (bgd_dt.normalize() - today).days
+        if days_to >= 0:
+            future_dates.append((days_to, bgd_dt))
+        else:
+            # 시작일 지났는데 종료일은 안 지났으면 행사중
+            if edd_dt is None or today <= edd_dt.normalize():
+                active_now = True
+
+    if active_now and not future_dates:
+        return "행사중", 0, "🔴"
+    if not future_dates:
+        return "—", 99999, ""
+
+    future_dates.sort(key=lambda x: x[0])
+    days_to, dt = future_dates[0]
+    if days_to <= 180:
+        emoji = "🟡"
+    else:
+        emoji = "🟢"
+    return dt.strftime("%Y-%m-%d"), days_to, emoji
 
 
 # ─────────────────────────────────────────────────────────────
