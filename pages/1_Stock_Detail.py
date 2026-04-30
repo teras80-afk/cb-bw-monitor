@@ -151,6 +151,16 @@ else:
         st.success(" / ".join(msgs) if msgs else "현재 활성 CB/BW 없음")
 
     st.dataframe(schedule, use_container_width=True, hide_index=True)
+
+    # 추정값 안내
+    is_est = schedule.attrs.get("is_estimated", False)
+    if is_est:
+        st.warning(
+            "⚠️ **개시일은 추정값입니다** (발행일 + 365일). "
+            "DART API가 정확한 전환청구개시일을 제공하지 않은 경우 자동 계산했습니다. "
+            "실제 일정은 아래 'DART 원문 링크'에서 발행공시 본문을 확인하세요."
+        )
+
     st.caption("💡 D-Day가 음수(=시작일 지남)인 건은 '행사중'으로 표시됩니다. "
                "행사중·임박 건은 단기 매물 출회 가능성이 높으니 주의.")
 
