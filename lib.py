@@ -250,7 +250,7 @@ def fetch_cb_conversion_periods(ticker: str) -> pd.DataFrame:
 
     frames = []
     try:
-        df_cb = dart.event(ticker, "전환사채권 발행결정", start=start, end=end)
+        df_cb = dart.event(ticker, "전환사채발행", start=start, end=end)
         if df_cb is not None and len(df_cb) > 0:
             df_cb = df_cb.copy()
             df_cb["_사채종류"] = "CB"
@@ -258,7 +258,7 @@ def fetch_cb_conversion_periods(ticker: str) -> pd.DataFrame:
     except Exception:
         pass
     try:
-        df_bw = dart.event(ticker, "신주인수권부사채권 발행결정", start=start, end=end)
+        df_bw = dart.event(ticker, "신주인수권부사채발행", start=start, end=end)
         if df_bw is not None and len(df_bw) > 0:
             df_bw = df_bw.copy()
             df_bw["_사채종류"] = "BW"
