@@ -293,9 +293,53 @@ def fetch_cb_conversion_periods(ticker: str) -> pd.DataFrame:
     prc_col = _find_col(["cv_prc", "ex_prc", "cvPrc", "exPrc"])
     tm_col = _find_col(["bd_tm", "bdTm"])
     fta_col = _find_col(["bd_fta", "bdFta"])
+    rcept_dt_col = _find_col(["rcept_dt", "rceptDt"])
+
+    # ★ 전환청구개시일 폴백: 컬럼이 없거나 값이 비어있으면
+    # 발행일(rcept_dt) + 1년으로 추정 (DART API 응답 누락 대응)
+    if bgd_col is None and rcept_dt_col is not None:
+        # 폴백: 발행일 + 365일을 추정 시작일로
+        def _estimate_bgd(rcept_dt_val):
+            try:
+                s = str(rcept_dt_val).strip()
+                if len(s) == 8 and s.isdigit():
+                    dt = pd.to_datetime(s, format="%Y%m%d")
+                else:
+                    dt = pd.to_datetime(s, errors="coerce")
+                if pd.isna(dt):
+                    return None
+                est = dt + pd.Timedelta(days=365)
+                return est.strftime("%Y-%m-%d")
+            except Exception:
+                return None
+        df["_추정개시일"] = df[rcept_dt_col].apply(_estimate_bgd)
+        bgd_col = "_추정개시일"
+        is_estimated = True
+    else:
+        is_estimated = False
 
     if bgd_col is None:
         return pd.DataFrame()
+
+    # 비어있는 셀도 추정값으로 채우기
+    if rcept_dt_col is not None and not is_estimated:
+        def _fill_if_empty(row):
+            v = row[bgd_col]
+            if v is None or str(v).strip() in ("", "-", "—", "nan", "None"):
+                # 발행일+1년 폴백
+                try:
+                    s = str(row[rcept_dt_col]).strip()
+                    if len(s) == 8 and s.isdigit():
+                        dt = pd.to_datetime(s, format="%Y%m%d")
+                    else:
+                        dt = pd.to_datetime(s, errors="coerce")
+                    if pd.isna(dt):
+                        return v
+                    return (dt + pd.Timedelta(days=365)).strftime("%Y-%m-%d")
+                except Exception:
+                    return v
+            return v
+        df[bgd_col] = df.apply(_fill_if_empty, axis=1)
 
     out = pd.DataFrame({
         "사채종류": df["_사채종류"],
@@ -304,6 +348,7 @@ def fetch_cb_conversion_periods(ticker: str) -> pd.DataFrame:
         "전환청구개시일": df[bgd_col],
         "전환청구종료일": df[edd_col] if edd_col else "-",
         "전환가액": df[prc_col] if prc_col else "-",
+        "_추정여부": is_estimated,
     })
     return out.reset_index(drop=True)
 
@@ -364,6 +409,8 @@ def get_full_conversion_schedule(ticker: str) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame()
 
+    is_estimated = bool(df["_추정여부"].iloc[0]) if "_추정여부" in df.columns and len(df) > 0 else False
+
     today = pd.Timestamp.now().normalize()
     rows = []
     for _, row in df.iterrows():
@@ -389,22 +436,31 @@ def get_full_conversion_schedule(ticker: str) -> pd.DataFrame:
             status = "🟢 대기"
             d_label = f"D-{days_to}"
 
+        # 개시일 라벨에 추정 표시
+        bgd_label = bgd_dt.strftime("%Y-%m-%d")
+        if is_estimated:
+            bgd_label += " (추정)"
+
         rows.append({
             "상태": status,
             "사채종류": row.get("사채종류", "-"),
             "회차": str(row.get("회차", "-")),
             "권면총액": row.get("권면총액", "-"),
-            "전환청구개시일": bgd_dt.strftime("%Y-%m-%d"),
+            "전환청구개시일": bgd_label,
             "D-Day": d_label,
             "전환청구종료일": edd_dt.strftime("%Y-%m-%d") if edd_dt is not None else "-",
             "전환가액": row.get("전환가액", "-"),
             "_sort": days_to,
+            "_estimated": is_estimated,
         })
 
     if not rows:
         return pd.DataFrame()
 
-    out = pd.DataFrame(rows).sort_values("_sort").drop(columns=["_sort"]).reset_index(drop=True)
+    out = pd.DataFrame(rows).sort_values("_sort").drop(
+        columns=["_sort", "_estimated"]).reset_index(drop=True)
+    # 추정 여부를 attrs로 저장 (페이지에서 활용)
+    out.attrs["is_estimated"] = is_estimated
     return out
 
 
