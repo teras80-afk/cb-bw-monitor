@@ -111,6 +111,117 @@ else:
     st.caption(f"표시: **{len(df_view)}건**")
     st.dataframe(df_view, use_container_width=True, hide_index=True)
 
+    # ─── 엑셀 다운로드 (종합 리포트) ───
+    st.markdown("#### 📥 엑셀 다운로드")
+    st.caption("위 데이터를 엑셀 파일로 받아 정기 보관·분석에 활용하세요. "
+               "파일 안에 DART 원문 URL이 클릭 가능한 링크로 포함됩니다.")
+
+    @st.cache_data(ttl=600)
+    def build_excel_report(df_input: pd.DataFrame) -> bytes:
+        """엑셀 리포트 생성 — 회사명+코드+종류+공시일+공시명+DART URL 포함"""
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+        from openpyxl.utils import get_column_letter
+        from io import BytesIO
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "CB_BW 발행 리포트"
+
+        # 헤더
+        headers = ["접수일", "회사명", "종목코드", "사채종류", "공시명", "DART 원문 URL"]
+        thin = Side(border_style="thin", color="BFBFBF")
+        border_all = Border(top=thin, bottom=thin, left=thin, right=thin)
+        header_fill = PatternFill(start_color="2E75B6", end_color="2E75B6", fill_type="solid")
+        header_font = Font(name="맑은 고딕", size=11, bold=True, color="FFFFFF")
+
+        for col_idx, h in enumerate(headers, 1):
+            cell = ws.cell(row=1, column=col_idx, value=h)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            cell.border = border_all
+
+        # 데이터 행
+        body_font = Font(name="맑은 고딕", size=10)
+        link_font = Font(name="맑은 고딕", size=10, color="0563C1", underline="single")
+
+        for row_idx, (_, row) in enumerate(df_input.iterrows(), start=2):
+            rcept_dt = str(row.get("rcept_dt", "")).strip()
+            # YYYYMMDD → YYYY-MM-DD
+            if len(rcept_dt) == 8 and rcept_dt.isdigit():
+                rcept_dt_fmt = f"{rcept_dt[:4]}-{rcept_dt[4:6]}-{rcept_dt[6:8]}"
+            else:
+                rcept_dt_fmt = rcept_dt
+
+            corp_name = str(row.get("corp_name", "—"))
+            stock_code = str(row.get("stock_code", "—"))
+            kind = str(row.get("사채종류", "—"))
+            report_nm = str(row.get("report_nm", "—"))
+            url = str(row.get("원문URL", ""))
+
+            values = [rcept_dt_fmt, corp_name, stock_code, kind, report_nm, url]
+            for col_idx, v in enumerate(values, 1):
+                cell = ws.cell(row=row_idx, column=col_idx, value=v)
+                cell.font = body_font
+                cell.border = border_all
+                cell.alignment = Alignment(vertical="center", wrap_text=False)
+
+            # URL을 클릭 가능한 하이퍼링크로
+            if url and url != "#":
+                link_cell = ws.cell(row=row_idx, column=6)
+                link_cell.hyperlink = url
+                link_cell.font = link_font
+
+        # 컬럼 너비 자동 조정
+        widths = [12, 24, 10, 10, 50, 60]
+        for col_idx, w in enumerate(widths, 1):
+            ws.column_dimensions[get_column_letter(col_idx)].width = w
+
+        # 첫 행 고정
+        ws.freeze_panes = "A2"
+
+        # 메타 정보 시트
+        meta_ws = wb.create_sheet(title="리포트 정보")
+        today = datetime.now().strftime("%Y-%m-%d %H:%M")
+        meta = [
+            ("리포트 제목", "CB/BW 발행 종합 리포트"),
+            ("생성일시", today),
+            ("총 건수", f"{len(df_input)}건"),
+            ("CB 건수", f"{(df_input['사채종류'] == 'CB').sum()}건" if "사채종류" in df_input.columns else "-"),
+            ("BW 건수", f"{(df_input['사채종류'] == 'BW').sum()}건" if "사채종류" in df_input.columns else "-"),
+            ("발행 회사 수", f"{df_input['corp_name'].nunique()}개사" if "corp_name" in df_input.columns else "-"),
+            ("데이터 출처", "DART 전자공시 (주요사항보고)"),
+            ("주의", "정정공시·취소공시는 별도 표시되지 않으므로 DART 원문 교차 확인 필요"),
+        ]
+        for row_idx, (k, v) in enumerate(meta, 1):
+            ws_k = meta_ws.cell(row=row_idx, column=1, value=k)
+            ws_v = meta_ws.cell(row=row_idx, column=2, value=v)
+            ws_k.font = Font(name="맑은 고딕", size=10, bold=True)
+            ws_v.font = Font(name="맑은 고딕", size=10)
+        meta_ws.column_dimensions["A"].width = 18
+        meta_ws.column_dimensions["B"].width = 60
+
+        # 바이트로 변환
+        buf = BytesIO()
+        wb.save(buf)
+        return buf.getvalue()
+
+    try:
+        excel_bytes = build_excel_report(df_show)
+        filename = f"CB_BW_발행리포트_{datetime.now():%Y%m%d}.xlsx"
+        st.download_button(
+            label="📊 엑셀 파일 다운로드",
+            data=excel_bytes,
+            file_name=filename,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary",
+            use_container_width=False,
+        )
+        st.caption(f"💡 파일명: {filename} · 시트 2개 (발행 리포트 + 리포트 정보)")
+    except Exception as e:
+        st.error(f"엑셀 생성 실패: {e}")
+
     # DART 원문 링크
     with st.expander("🔗 DART 원문 바로가기"):
         for _, row in df_show.iterrows():
