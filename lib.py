@@ -358,15 +358,28 @@ def parse_date_flex(s):
     if s is None:
         return None
     s = str(s).strip()
-    if s in ("", "-", "—", "nan", "None"):
+    if s in ("", "-", "—", "nan", "None", "NaT"):
         return None
+
+    # 한글 날짜 형식 ("2022년 05월 25일") → "2022-05-25"로 변환
+    import re
+    m = re.match(r"(\d{4})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일", s)
+    if m:
+        s = f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+
     for fmt in ["%Y-%m-%d", "%Y.%m.%d", "%Y/%m/%d", "%Y%m%d"]:
         try:
-            return pd.to_datetime(s, format=fmt)
+            result = pd.to_datetime(s, format=fmt)
+            if pd.isna(result):
+                continue
+            return result
         except Exception:
             continue
     try:
-        return pd.to_datetime(s, errors="coerce")
+        result = pd.to_datetime(s, errors="coerce")
+        if pd.isna(result):
+            return None
+        return result
     except Exception:
         return None
 
