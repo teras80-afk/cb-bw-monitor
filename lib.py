@@ -8,20 +8,168 @@ import requests
 import base64
 from datetime import datetime, timedelta
 
-try:
-    import OpenDartReader as _ODR
-    _HAS_DART = True
-    _DART_IMPORT_ERR = ""
-except Exception as _e:
-    _ODR = None
-    _HAS_DART = False
-    _DART_IMPORT_ERR = f"{type(_e).__name__}: {_e}"
+# Python 3.14 + OpenDartReader 0.3.0에서는 패키지 이름이 소문자 'opendartreader'로 변경됨.
+# 0.2.x에서는 'OpenDartReader' (모듈 자체가 클래스).
+# 양쪽 모두 호환되도록 여러 형태 시도.
+_ODR = None
+_HAS_DART = False
+_DART_IMPORT_ERR = ""
+
+_tried = []
+_candidates = [
+    # (모듈명, 클래스 추출 여부)
+    ("OpenDartReader", False),  # 0.2.x: 모듈 자체가 클래스
+    ("opendartreader", True),   # 0.3.x: 모듈 안에 OpenDartReader 클래스
+    ("Opendartreader", True),
+]
+for _name, _need_attr in _candidates:
+    try:
+        _mod = __import__(_name)
+        if _need_attr:
+            # 모듈 안에서 OpenDartReader 클래스 찾기
+            if hasattr(_mod, "OpenDartReader"):
+                _ODR = _mod.OpenDartReader
+            elif callable(_mod):
+                _ODR = _mod
+            else:
+                # 모듈 안의 callable 속성 중 'dart' 키워드 포함된 것
+                for _attr in dir(_mod):
+                    if "dart" in _attr.lower() and callable(getattr(_mod, _attr, None)):
+                        _ODR = getattr(_mod, _attr)
+                        break
+        else:
+            _ODR = _mod
+        if _ODR is not None and callable(_ODR):
+            _HAS_DART = True
+            break
+        else:
+            _tried.append(f"{_name}: callable 객체 못 찾음")
+    except ImportError as _e:
+        _tried.append(f"{_name}: {_e}")
+        continue
+    except Exception as _e:
+        _tried.append(f"{_name}: {type(_e).__name__}: {_e}")
+        continue
+
+if not _HAS_DART:
+    _DART_IMPORT_ERR = " / ".join(_tried) if _tried else "import 실패"
 
 try:
     import FinanceDataReader as fdr
     _HAS_FDR = True
 except Exception:
     _HAS_FDR = False
+
+
+# ─────────────────────────────────────────────────────────────
+# DART 영문 컬럼명 → 한글 설명 매핑
+# (진단 페이지 + 화면 1의 미상환 채무증권 표 한글화에 활용)
+# ─────────────────────────────────────────────────────────────
+DART_COLUMN_NAMES = {
+    # 공시 기본 정보
+    "rcept_no": "접수번호",
+    "rcept_dt": "접수일",
+    "corp_code": "회사고유번호",
+    "corp_cls": "법인구분",
+    "corp_name": "회사명",
+    "stock_code": "종목코드",
+    "report_nm": "공시명",
+    "flr_nm": "공시제출인",
+    "rm": "비고",
+
+    # 채무증권 발행실적 (xbrl)
+    "isu_cmpny": "발행회사",
+    "scrits_knd_nm": "증권종류",
+    "isu_mth_nm": "발행방법",
+    "isu_de": "발행일",
+    "facvalu_totamt": "권면(전자등록)총액",
+    "intrt": "이자율(%)",
+    "evl_grad_instt": "평가등급/평가기관",
+    "mtd": "만기일",
+    "repy_at": "상환여부",
+    "mngt_cmpny": "주관회사",
+    "stlm_dt": "결산기준일",
+
+    # CB/BW 발행결정 (event)
+    "bddd": "이사회결의일",
+    "od_a_at_t": "사외이사 참석",
+    "od_a_at_b": "사외이사 불참",
+    "adt_a_atn": "감사 참석여부",
+    "fdpp_fclt": "자금조달목적-시설자금",
+    "fdpp_bsninh": "자금조달목적-영업양수자금",
+    "fdpp_op": "자금조달목적-운영자금",
+    "fdpp_dtrp": "자금조달목적-채무상환자금",
+    "fdpp_ocsa": "자금조달목적-타법인증권취득자금",
+    "fdpp_etc": "자금조달목적-기타자금",
+    "ftc_stt_atn": "공정거래위원회 신고대상",
+    "bd_tm": "회차",
+    "bd_knd": "사채종류",
+    "bd_fta": "권면총액",
+    "atcsc_rmislmt": "사모발행 한도",
+    "ovis_fta": "해외발행 권면총액",
+    "ovis_fta_crn": "해외발행 통화",
+    "ovis_ster": "해외발행 시장",
+    "ovis_isar": "해외발행 지역",
+    "ovis_mktnm": "해외발행 시장명",
+    "bd_intr_ex": "표면이자율(%)",
+    "bd_intr_sf": "만기이자율(%)",
+    "bd_mtd": "사채만기일",
+    "bdis_mthn": "사채발행방법",
+    "cv_rt": "전환비율(%)",
+    "cv_prc": "전환가액(원)",
+    "cvisstk_knd": "전환대상 주식종류",
+    "cvisstk_cnt": "전환대상 주식수",
+    "cvisstk_tisstk_vs": "발행주식 대비 비율(%)",
+    "cvrqpd_bgd": "전환청구개시일 ★",
+    "cvrqpd_edd": "전환청구종료일 ★",
+    "act_mktprcfl_cvprc_lwtrsprc": "리픽싱 최저전환가액",
+    "act_mktprcfl_cvprc_lwtrsprc_bs": "리픽싱 산정근거",
+    "rmislmt_lt70p": "리픽싱 한도(%)",
+    "abmg": "최대주주 변경여부",
+    "sbd": "납입일",
+    "pymd": "청약일",
+    "rpmcmp": "대표주관회사",
+    "grint": "보증기관",
+    "rs_sm_atn": "증권신고서 제출여부",
+    "ex_sm_r": "공시 제외사유",
+    "ovis_ltdtl": "해외발행 상세",
+
+    # BW 전용
+    "ex_prc": "행사가액(원)",
+    "ex_rt": "행사비율(%)",
+    "ex_rqpd_bgd": "행사청구개시일",
+    "ex_rqpd_edd": "행사청구종료일",
+    "wrt_dvdgrt": "신주인수권 종류",
+
+    # 합 / 기타
+    "_사채종류": "사채종류",
+    "_미상환잔액(원)": "미상환잔액(원)",
+    "_잠재출회주식수": "잠재출회주식수",
+}
+
+
+def korean_columns(df: pd.DataFrame, mode: str = "replace") -> pd.DataFrame:
+    """
+    DataFrame의 영문 컬럼을 한글로 변환.
+    mode='replace': 한글로 완전 대체 (예: 'rcept_no' → '접수번호')
+    mode='both':    영문(한글) 형태 (예: 'rcept_no (접수번호)')
+    매핑 없는 컬럼은 그대로 유지.
+    """
+    if df is None or df.empty:
+        return df
+    new_cols = []
+    for col in df.columns:
+        col_str = str(col)
+        kor = DART_COLUMN_NAMES.get(col_str)
+        if kor is None:
+            new_cols.append(col_str)
+        elif mode == "both":
+            new_cols.append(f"{col_str} ({kor})")
+        else:
+            new_cols.append(kor)
+    out = df.copy()
+    out.columns = new_cols
+    return out
 
 
 # ─────────────────────────────────────────────────────────────
@@ -702,4 +850,5 @@ def github_put_watchlist(new_content, sha):
 
 def parse_watchlist(text):
     return [ln.strip() for ln in text.splitlines()
+            if ln.strip() and not ln.startswith("#")]
             if ln.strip() and not ln.startswith("#")]
