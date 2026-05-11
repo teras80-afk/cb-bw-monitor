@@ -851,4 +851,3 @@ def github_put_watchlist(new_content, sha):
 def parse_watchlist(text):
     return [ln.strip() for ln in text.splitlines()
             if ln.strip() and not ln.startswith("#")]
-            if ln.strip() and not ln.startswith("#")]
