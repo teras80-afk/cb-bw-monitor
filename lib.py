@@ -205,35 +205,74 @@ def require_dart_or_stop():
 
 
 # ─────────────────────────────────────────────────────────────
-# 종목명 매핑 (KRX)
+# 종목명 매핑 (DART)
 # ─────────────────────────────────────────────────────────────
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=86400)  # 24시간 캐시
 def get_ticker_name_map() -> dict:
-    """KRX 전체 상장종목 코드↔이름 매핑. 실패 시 빈 dict."""
-    if not _HAS_FDR:
+    """
+    DART OpenDartReader의 corp_codes를 활용해 상장사 코드↔이름 매핑.
+    이미 사용 중인 DART API 키를 그대로 활용해 추가 의존성 없음.
+    실패 시 빈 dict 반환.
+    """
+    dart, err = get_dart_client()
+    if dart is None:
         return {}
     try:
-        df = fdr.StockListing("KRX")
-        code_col = "Code" if "Code" in df.columns else "Symbol"
-        return dict(zip(df[code_col].astype(str).str.zfill(6), df["Name"]))
+        df = dart.corp_codes
+        if df is None or len(df) == 0:
+            return {}
+        # 상장사만 (stock_code 있는 것)
+        if "stock_code" not in df.columns or "corp_name" not in df.columns:
+            return {}
+        listed = df[df["stock_code"].notna() & (df["stock_code"].astype(str).str.strip() != "")]
+        if len(listed) == 0:
+            return {}
+        # 6자리 zero-padding
+        codes = listed["stock_code"].astype(str).str.strip().str.zfill(6)
+        names = listed["corp_name"].astype(str).str.strip()
+        result = dict(zip(codes, names))
+        # 빈 키/값 제거
+        return {k: v for k, v in result.items() if k and v and len(k) == 6}
     except Exception:
         return {}
 
 
-def resolve_ticker(user_input: str, name_map: dict) -> str | None:
-    """종목코드 또는 종목명으로 6자리 코드 반환"""
-    s = (user_input or "").strip()
-    if not s:
-        return None
-    if s.isdigit() and len(s) == 6:
-        return s if (not name_map or s in name_map) else s
+def get_search_options(name_map: dict) -> list:
+    """selectbox용 표시 형식: '회사명 (코드)' 리스트 반환"""
     if not name_map:
+        return []
+    items = sorted(name_map.items(), key=lambda x: x[1])  # 회사명 가나다순
+    return [f"{name} ({code})" for code, name in items]
+
+
+def parse_search_option(option: str, name_map: dict) -> str | None:
+    """selectbox 선택값 또는 직접 입력값에서 6자리 코드 추출"""
+    if not option:
         return None
-    for t, n in name_map.items():
-        if n == s:
-            return t
-    hits = [t for t, n in name_map.items() if s in n]
-    return hits[0] if len(hits) == 1 else None
+    s = option.strip()
+    # 1. "회사명 (코드)" 형식
+    import re
+    m = re.search(r"\((\d{6})\)\s*$", s)
+    if m:
+        return m.group(1)
+    # 2. 6자리 숫자 직접 입력
+    if s.isdigit() and len(s) == 6:
+        return s
+    # 3. 회사명 직접 입력 (정확 일치)
+    if name_map:
+        for code, name in name_map.items():
+            if name == s:
+                return code
+        # 4. 부분 일치 (한 건만)
+        hits = [code for code, name in name_map.items() if s in name]
+        if len(hits) == 1:
+            return hits[0]
+    return None
+
+
+def resolve_ticker(user_input: str, name_map: dict) -> str | None:
+    """종목코드 또는 종목명으로 6자리 코드 반환 (하위 호환용)"""
+    return parse_search_option(user_input, name_map)
 
 
 @st.cache_data(ttl=86400)
