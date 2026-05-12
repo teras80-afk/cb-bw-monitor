@@ -11,6 +11,7 @@ from lib import (
     fetch_cb_conversion_periods, find_imminent_conversions,
     get_full_conversion_schedule,
     get_listed_shares, get_company_name,
+    korean_columns, get_search_options, parse_search_option,
 )
 
 st.set_page_config(page_title="종목별 조회", page_icon="🎯", layout="wide")
@@ -18,26 +19,51 @@ st.title("🎯 종목별 CB/BW 조회")
 st.caption("발행 이력, 미상환 잔액, 잠재 희석률, 전환청구 D-Day까지 한눈에")
 
 require_dart_or_stop()
-name_map = get_ticker_name_map()
-if not name_map:
-    st.info("ℹ️ 종목명 자동 변환 기능은 비활성 상태입니다. **6자리 종목코드를 직접 입력**하세요. (예: 005930)")
+
+with st.spinner("종목 리스트 로딩 중... (최초 1회만 시간 걸림, 이후 24시간 캐시)"):
+    name_map = get_ticker_name_map()
 
 st.markdown("---")
 
+# ─── 검색 UI ───
 col_in, col_yrs = st.columns([3, 1])
 with col_in:
-    user_input = st.text_input("종목코드 6자리 또는 종목명",
-                                value="", placeholder="예: 005930 또는 삼성전자")
+    if name_map:
+        # 종목 리스트 로딩 성공 → selectbox 사용
+        options = [""] + get_search_options(name_map)
+        st.caption(f"✅ 전체 상장사 **{len(name_map):,}개** 검색 가능 — "
+                   "종목명 일부 입력하면 자동 필터링 (예: '삼성', '엘앤')")
+        user_choice = st.selectbox(
+            "종목 검색 (종목명 또는 6자리 코드)",
+            options=options,
+            index=0,
+            placeholder="예: 삼성전자, 케이비아이, 024840",
+        )
+        # selectbox에 없는 코드 직접 입력 옵션
+        with st.expander("🔢 6자리 코드 직접 입력 (목록에 없는 경우)"):
+            manual_input = st.text_input(
+                "종목코드 입력",
+                value="", placeholder="예: 024840",
+                label_visibility="collapsed",
+            )
+        user_input = manual_input.strip() if manual_input.strip() else user_choice
+    else:
+        # 종목 리스트 로딩 실패 → 기존 텍스트 입력
+        st.warning("⚠️ 종목명 자동 변환 기능 비활성 — 6자리 종목코드 직접 입력")
+        user_input = st.text_input(
+            "종목코드 6자리",
+            value="", placeholder="예: 005930",
+        )
 with col_yrs:
     years_back = st.selectbox("발행 공시 조회 기간", [3, 5, 7, 10], index=1)
 
-if not user_input.strip():
-    st.info("종목을 입력하세요.")
+if not user_input or not str(user_input).strip():
+    st.info("종목을 선택하거나 입력하세요.")
     st.stop()
 
-ticker = resolve_ticker(user_input, name_map)
+ticker = parse_search_option(user_input, name_map)
 if not ticker:
-    st.error("종목을 찾지 못했습니다.")
+    st.error(f"종목을 찾지 못했습니다: {user_input}")
     st.stop()
 
 name = get_company_name(ticker, name_map)
@@ -101,7 +127,10 @@ if not has_data:
     else:
         st.success(f"✅ 미상환 CB/BW 없음 (기준: {report_label})")
         with st.expander("전체 채무증권 발행실적 (참고)"):
-            st.dataframe(df_debt, use_container_width=True, hide_index=True)
+            st.dataframe(korean_columns(df_debt),
+                          use_container_width=True, hide_index=True)
+            st.caption("💡 본 표에는 일반 회사채까지 포함됩니다. "
+                       "CB/BW만 골라낸 결과는 위 '미상환 CB/BW 상세'에 표시됩니다.")
 else:
     # 계산용 컬럼은 숨김
     show_df = df_calc.drop(
@@ -111,6 +140,8 @@ else:
     )
     if "_잠재출회주식수" in show_df.columns:
         show_df = show_df.rename(columns={"_잠재출회주식수": "잠재출회주식수(계산)"})
+    # 영문 컬럼만 한글로 변환 (이미 한글인 컬럼은 유지)
+    show_df = korean_columns(show_df)
     st.dataframe(show_df, use_container_width=True, hide_index=True)
     st.caption("'잠재출회주식수(계산)' = 미상환잔액 ÷ 전환(행사)가액 (자체 계산)")
 
